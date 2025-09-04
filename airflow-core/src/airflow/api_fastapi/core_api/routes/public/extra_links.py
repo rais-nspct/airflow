@@ -87,6 +87,35 @@ def get_extra_links(
     )
     all_extra_links = {link_name: link_url or None for link_name, link_url in sorted(all_extra_link_pairs)}
 
+    from airflow.models.xcom import XComModel
+
+    # Always merge runtime (_link_*) keys from XCom
+    query = XComModel.get_many(
+        dag_ids=dag_id,
+        run_id=dag_run_id,
+        task_ids=task_id,
+        map_indexes=map_index,
+    ).filter(XComModel.key.like(r"\_link\_%"))
+
+    # Collect available serialized links from task
+    link_map = {link.xcom_key.removeprefix("_link_"): link.name for link in task.operator_extra_links}
+
+    # Execute the query through the session (works for SQLA 1.4 and 2.x)
+    rows = session.execute(query).scalars().all()
+
+    for row in rows:
+        raw_class_name = row.key.removeprefix("_link_")
+        value = XComModel.deserialize_value(row)
+
+        # If it matches one of the serialized links, use its .name
+        if raw_class_name in link_map:
+            display_name = link_map[raw_class_name]
+        else:
+            # Fallback: just use the raw class name if not in operator_extra_links
+            display_name = raw_class_name
+
+        all_extra_links[display_name] = value
+
     return ExtraLinkCollectionResponse(
         extra_links=all_extra_links,
         total_entries=len(all_extra_links),
